@@ -37,12 +37,14 @@ class GridcraftEnv(ParallelEnv):
                     "grid": spaces.Box(
                         low=0,
                         high=10,
-                        shape=(3, self.config.view_size, self.config.view_size),
+                        shape=(3, self.config.view_size,
+                               self.config.view_size),
                         dtype=np.int8,
                     ),
                     "self": spaces.Box(
                         low=0,
-                        high=max(self.config.hp_max, self.config.hunger_max, 99),
+                        high=max(self.config.hp_max,
+                                 self.config.hunger_max, 99),
                         shape=(2 + inv_size,),
                         dtype=np.int16,
                     ),
@@ -64,7 +66,8 @@ class GridcraftEnv(ParallelEnv):
     def step(self, actions: dict[str, int]):
         result = self.world.step(actions)
         observations = self.world.observations()
-        self.agents = [agent_id for agent_id, agent in self.world.agents.items() if agent.alive]
+        self.agents = [agent_id for agent_id,
+                       agent in self.world.agents.items() if agent.alive]
         return observations, result.rewards, result.terminations, result.truncations, result.infos
 
     def render(self):

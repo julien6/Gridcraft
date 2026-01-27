@@ -4,12 +4,14 @@ from gridcraft import GridcraftConfig, GridcraftEnv
 
 
 def test_smoke_step():
-    config = GridcraftConfig(width=12, height=12, num_agents=2, max_steps=20, seed=42)
+    config = GridcraftConfig(
+        width=12, height=12, num_agents=2, max_steps=20, seed=42)
     env = GridcraftEnv(config=config)
     obs, infos = env.reset(seed=42)
     assert set(obs.keys()) == set(env.possible_agents)
     for _ in range(10):
-        actions = {agent: env.action_spaces[agent].sample() for agent in env.agents}
+        actions = {agent: env.action_spaces[agent].sample()
+                   for agent in env.agents}
         obs, rewards, terminations, truncations, infos = env.step(actions)
         assert all(isinstance(value, float) for value in rewards.values())
         if all(terminations.values()) or all(truncations.values()):

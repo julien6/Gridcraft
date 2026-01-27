@@ -66,19 +66,21 @@ class PygameRenderer:
         if self.config.asset_path and os.path.isdir(self.config.asset_path):
             # Assets can be overridden by placing PNGs named by enum.
             for terrain_id in Terrain:
-                custom = self._load_png(f"terrain_{terrain_id.name.lower()}.png")
+                custom = self._load_png("assets" + os.sep +
+                                        f"terrain_{terrain_id.name.lower()}.png")
                 if custom is not None:
                     terrain[terrain_id] = custom
             for block_id in Block:
                 if block_id == Block.EMPTY:
                     continue
-                custom = self._load_png(f"block_{block_id.name.lower()}.png")
+                custom = self._load_png(
+                    "assets" + os.sep + f"block_{block_id.name.lower()}.png")
                 if custom is not None:
                     blocks[block_id] = custom
-            custom_agent = self._load_png("agent.png")
+            custom_agent = self._load_png("assets" + os.sep + "agent.png")
             if custom_agent is not None:
                 agent = custom_agent
-            custom_mob = self._load_png("mob.png")
+            custom_mob = self._load_png("assets" + os.sep + "mob.png")
             if custom_mob is not None:
                 mob = custom_mob
 
@@ -90,7 +92,8 @@ class PygameRenderer:
             return None
         pygame = self._pygame
         surface = pygame.image.load(path)
-        surface = pygame.transform.scale(surface, (self.config.tile_size, self.config.tile_size))
+        surface = pygame.transform.scale(
+            surface, (self.config.tile_size, self.config.tile_size))
         arr = pygame.surfarray.array3d(surface)
         return np.transpose(arr, (1, 0, 2))
 
@@ -102,13 +105,15 @@ class PygameRenderer:
         assert self.assets is not None
 
         frame = np.zeros(
-            (self.config.height * self.config.tile_size, self.config.width * self.config.tile_size, 3),
+            (self.config.height * self.config.tile_size,
+             self.config.width * self.config.tile_size, 3),
             dtype=np.uint8,
         )
 
         for y in range(self.config.height):
             for x in range(self.config.width):
-                terrain_tile = self.assets.terrain[Terrain(world.terrain[y, x])]
+                terrain_tile = self.assets.terrain[Terrain(
+                    world.terrain[y, x])]
                 self._blit(frame, terrain_tile, x, y)
                 block_id = Block(world.blocks[y, x])
                 if block_id != Block.EMPTY:
@@ -128,11 +133,14 @@ class PygameRenderer:
             if agent.alive:
                 self._blit(frame, self.assets.agent, agent.x, agent.y)
 
-        surf = pygame.surfarray.make_surface(np.transpose(frame, (1, 0, 2)))
-        self.screen.blit(surf, (0, 0))
-        pygame.display.flip()
-        self.clock.tick(self.config.fps)
-
+        if render_mode == "human":
+            self._pump_events()
+            surf = pygame.surfarray.make_surface(
+                np.transpose(frame, (1, 0, 2)))
+            self.screen.blit(surf, (0, 0))
+            pygame.display.flip()
+            self.clock.tick(self.config.fps)
+            return None
         if render_mode == "rgb_array":
             return frame
         return None
@@ -141,7 +149,7 @@ class PygameRenderer:
         ts = self.config.tile_size
         x0 = x * ts
         y0 = y * ts
-        frame[y0 : y0 + ts, x0 : x0 + ts, :] = tile
+        frame[y0: y0 + ts, x0: x0 + ts, :] = tile
 
     def close(self) -> None:
         if self._pygame is not None:
@@ -150,3 +158,10 @@ class PygameRenderer:
             self.screen = None
             self.clock = None
             self.assets = None
+
+    def _pump_events(self) -> None:
+        pygame = self._pygame
+        assert pygame is not None
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                self.close()

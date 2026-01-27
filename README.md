@@ -4,13 +4,13 @@ Gridcraft is a simple 2D top-down gridworld inspired by Minecraft, built as a **
 
 ## Features
 
-- Parallel multi-agent API (PettingZoo-style)
-- Survival mechanics: HP + hunger decay
-- Hostile mobs with simple aggro AI
-- Harvesting trees/stone, crafting basic tools/weapons
-- Local observations (grid window + agent state vector)
-- Deterministic RNG via seeds
-- Optional PyGame renderer (`human` / `rgb_array`)
+* Parallel multi-agent API (PettingZoo-style)
+* Survival mechanics: HP + hunger decay
+* Hostile mobs with simple aggro AI
+* Harvesting trees/stone, crafting basic tools/weapons
+* Local observations (grid window + agent state vector)
+* Deterministic RNG via seeds
+* Optional PyGame renderer (`human` / `rgb_array`)
 
 ## Quick start
 
@@ -36,9 +36,9 @@ env.close()
 
 To avoid shipping any copyrighted Minecraft textures, the renderer ships with solid-color tiles by default.
 You can override assets by providing `GridcraftConfig(asset_path=...)` and placing PNGs in that folder
-(e.g., `terrain_grass.png`, `block_tree.png`, `agent.png`, `mob.png`).
+(e.g., `terrain_grass.png` , `block_tree.png` , `agent.png` , `mob.png` ).
 
 ## Notes
 
-- This environment is intentionally small and simple to enable rapid iteration and RL experiments.
-- Crafting is enabled everywhere by default; set `craft_anywhere=False` and place crafting tables for stricter rules.
+* This environment is intentionally small and simple to enable rapid iteration and RL experiments.
+* Crafting is enabled everywhere by default; set `craft_anywhere=False` and place crafting tables for stricter rules.

@@ -9,6 +9,7 @@ dependencies = [
     "gymnasium",
     "pettingzoo",
     "pygame",
+    "pytest"
 ]
 
 [tool.pytest.ini_options]
