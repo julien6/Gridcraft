@@ -1,0 +1,15 @@
+[project]
+name = "gridcraft"
+version = "0.1.0"
+description = "Simple multi-agent gridworld inspired by Minecraft"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy",
+    "gymnasium",
+    "pettingzoo",
+    "pygame",
+]
+
+[tool.pytest.ini_options]
+addopts = "-q"
