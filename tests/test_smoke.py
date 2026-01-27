@@ -1,8 +1,4 @@
-import pytest
-
-numpy = pytest.importorskip("numpy")
-pytest.importorskip("gymnasium")
-pytest.importorskip("pettingzoo")
+import numpy as np
 
 from gridcraft import GridcraftConfig, GridcraftEnv
 
@@ -27,6 +23,6 @@ def test_reproducibility():
     obs_a, _ = env_a.reset(seed=7)
     env_b = GridcraftEnv(config=config)
     obs_b, _ = env_b.reset(seed=7)
-    assert numpy.array_equal(obs_a["agent_0"]["grid"], obs_b["agent_0"]["grid"])
+    assert np.array_equal(obs_a["agent_0"]["grid"], obs_b["agent_0"]["grid"])
     env_a.close()
     env_b.close()
