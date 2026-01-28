@@ -10,7 +10,7 @@ fi
 echo "🛠️  Creating virtual Python 3.10 environment..."
 python3.10 -m venv ./venv
 
-echo "Activation de l'environnement virtuel..."
+echo "Activation of virtual environment..."
 source ./venv/bin/activate
 
 pip install -e .
