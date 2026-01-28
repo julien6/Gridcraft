@@ -21,8 +21,10 @@ class GridcraftWorld:
     def __init__(self, config: GridcraftConfig, rng: np.random.Generator):
         self.config = config
         self.rng = rng
-        self.terrain = np.full((config.height, config.width), Terrain.GRASS, dtype=np.int8)
-        self.blocks = np.full((config.height, config.width), Block.EMPTY, dtype=np.int8)
+        self.terrain = np.full(
+            (config.height, config.width), Terrain.GRASS, dtype=np.int8)
+        self.blocks = np.full((config.height, config.width),
+                              Block.EMPTY, dtype=np.int8)
         self.agents: dict[str, AgentState] = {}
         self.mobs: list[MobState] = []
         self.items: list[ItemDrop] = []
@@ -52,14 +54,46 @@ class GridcraftWorld:
         self._spawn_initial_mobs()
 
     def _generate_terrain(self) -> None:
-        water_mask = self.rng.random(self.terrain.shape) < self.config.water_density
-        self.terrain[water_mask] = Terrain.WATER
-        dirt_mask = self.rng.random(self.terrain.shape) < 0.05
+        self.terrain[:] = Terrain.GRASS
+        height, width = self.terrain.shape
+        target_water = int(self.config.water_density * width * height)
+        water_count = 0
+
+        while water_count < target_water:
+            start_x = int(self.rng.integers(0, width))
+            start_y = int(self.rng.integers(0, height))
+            if self.terrain[start_y, start_x] == Terrain.WATER:
+                continue
+
+            lake_size = int(self.rng.integers(4, 12))
+            lake_cells: list[tuple[int, int]] = [(start_x, start_y)]
+            self.terrain[start_y, start_x] = Terrain.WATER
+            water_count += 1
+
+            attempts = 0
+            while len(lake_cells) < lake_size and attempts < lake_size * 10:
+                attempts += 1
+                base_x, base_y = lake_cells[int(
+                    self.rng.integers(0, len(lake_cells)))]
+                dx, dy = [(1, 0), (-1, 0), (0, 1), (0, -1)
+                          ][int(self.rng.integers(0, 4))]
+                nx, ny = base_x + dx, base_y + dy
+                if 0 <= nx < width and 0 <= ny < height and self.terrain[ny, nx] != Terrain.WATER:
+                    self.terrain[ny, nx] = Terrain.WATER
+                    lake_cells.append((nx, ny))
+                    water_count += 1
+                    if water_count >= target_water:
+                        break
+
+        dirt_mask = (self.rng.random(self.terrain.shape) < 0.05) & (
+            self.terrain != Terrain.WATER)
         self.terrain[dirt_mask] = Terrain.DIRT
 
     def _spawn_blocks(self) -> None:
-        tree_mask = self.rng.random(self.blocks.shape) < self.config.tree_density
-        stone_mask = self.rng.random(self.blocks.shape) < self.config.stone_density
+        tree_mask = self.rng.random(
+            self.blocks.shape) < self.config.tree_density
+        stone_mask = self.rng.random(
+            self.blocks.shape) < self.config.stone_density
         self.blocks[tree_mask] = Block.TREE
         self.blocks[stone_mask] = Block.STONE
         self.blocks[self.terrain == Terrain.WATER] = Block.EMPTY
@@ -116,12 +150,14 @@ class GridcraftWorld:
                 continue
             self._mob_counter += 1
             self.mobs.append(
-                MobState(mob_id=self._mob_counter, x=int(x), y=int(y), hp=self.config.mob_hp)
+                MobState(mob_id=self._mob_counter, x=int(
+                    x), y=int(y), hp=self.config.mob_hp)
             )
             return
 
     def _distance_to_nearest_agent(self, x: int, y: int) -> int:
-        distances = [abs(agent.x - x) + abs(agent.y - y) for agent in self.agents.values() if agent.alive]
+        distances = [abs(agent.x - x) + abs(agent.y - y)
+                     for agent in self.agents.values() if agent.alive]
         return min(distances) if distances else 999
 
     def step(self, actions: dict[str, int]) -> StepResult:
@@ -193,13 +229,22 @@ class GridcraftWorld:
             agent.x, agent.y = nx, ny
 
     def _harvest(self, agent: AgentState) -> None:
-        block = self.blocks[agent.y, agent.x]
-        if block == Block.TREE:
-            self.blocks[agent.y, agent.x] = Block.EMPTY
-            self._add_item(agent, Item.WOOD, 1)
-        elif block == Block.STONE:
-            self.blocks[agent.y, agent.x] = Block.EMPTY
-            self._add_item(agent, Item.STONE, 1)
+        for dx in [-1, 0, 1]:
+            for dy in [-1, 0, 1]:
+                if abs(dx) + abs(dy) != 1:
+                    continue
+                nx, ny = agent.x + dx, agent.y + dy
+                if 0 <= nx < self.config.width and 0 <= ny < self.config.height:
+                    block = self.blocks[ny, nx]
+                    if block == Block.TREE:
+                        self.blocks[ny, nx] = Block.EMPTY
+                        self._add_item(agent, Item.WOOD, 1)
+                        return
+                    elif block == Block.STONE:
+                        if agent.equipped in (Item.WOOD_PICKAXE, Item.STONE_PICKAXE):
+                            self.blocks[ny, nx] = Block.EMPTY
+                            self._add_item(agent, Item.STONE, 1)
+                            return
 
     def _pickup(self, agent: AgentState) -> None:
         items_here = self._items_at(agent.x, agent.y)
@@ -219,7 +264,8 @@ class GridcraftWorld:
                 if mob.hp <= 0:
                     mob.alive = False
                     if self.rng.random() < self.config.item_drop_chance:
-                        self.items.append(ItemDrop(item=Item.APPLE, count=1, x=mob.x, y=mob.y))
+                        self.items.append(
+                            ItemDrop(item=Item.APPLE, count=1, x=mob.x, y=mob.y))
                 return
 
     def _eat(self, agent: AgentState) -> None:
@@ -245,6 +291,8 @@ class GridcraftWorld:
                 self._add_item(agent, item, count)
 
     def _add_item(self, agent: AgentState, item: Item, count: int) -> None:
+        if item not in agent.inventory:
+            agent.inventory_order.append(item)
         agent.inventory[item] = agent.inventory.get(item, 0) + count
         if item in (Item.WOOD_SWORD, Item.STONE_SWORD, Item.WOOD_PICKAXE, Item.STONE_PICKAXE):
             agent.equipped = item

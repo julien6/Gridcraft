@@ -5,8 +5,8 @@ from dataclasses import dataclass
 
 @dataclass
 class GridcraftConfig:
-    width: int = 32
-    height: int = 32
+    width: int = 64
+    height: int = 64
     num_agents: int = 2
     seed: int | None = None
 
@@ -33,6 +33,6 @@ class GridcraftConfig:
 
     craft_anywhere: bool = True
 
-    tile_size: int = 32
+    tile_size: int = 48
     fps: int = 12
     asset_path: str | None = None

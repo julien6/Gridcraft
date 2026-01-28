@@ -2,6 +2,8 @@
 
 Gridcraft is a simple 2D top-down gridworld inspired by Minecraft, built as a **multi-agent** PettingZoo-style environment with survival, hunger, hostile mobs, harvesting, and crafting. It includes a minimal **PyGame renderer** with a built-in fallback color palette for tiles and entities.
 
+![Gridcraft overview](gridcraft_overview.gif)
+
 ## Features
 
 * Parallel multi-agent API (PettingZoo-style)

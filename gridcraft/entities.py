@@ -13,6 +13,7 @@ class AgentState:
     hp: int
     hunger: int
     inventory: dict[Item, int] = field(default_factory=dict)
+    inventory_order: list[Item] = field(default_factory=list)
     equipped: Item | None = None
     alive: bool = True
 
