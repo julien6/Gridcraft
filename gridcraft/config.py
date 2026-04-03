@@ -26,7 +26,7 @@ class GridcraftConfig:
     mob_aggro_radius: int = 6
     mob_move_prob: float = 0.8
 
-    view_size: int = 9
+    view_size: int = 7
     max_steps: int = 500
 
     item_drop_chance: float = 0.2

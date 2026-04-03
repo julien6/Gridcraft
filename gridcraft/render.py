@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .config import GridcraftConfig
-from .constants import Block, Item, ITEM_NAMES, Terrain
+from .constants import Block, EntityType, Item, ITEM_NAMES, Terrain
 from .world import GridcraftWorld
 
 
@@ -34,6 +34,7 @@ class PygameRenderer:
         self._text_cache: dict[tuple[str,
                                      tuple[int, int, int]], np.ndarray] = {}
         self._scaled_item_cache: dict[tuple[int, int], np.ndarray] = {}
+        self._scaled_tile_cache: dict[tuple[str, int, int], np.ndarray] = {}
 
     def _init_pygame(self) -> None:
         if self._pygame is None:
@@ -127,7 +128,6 @@ class PygameRenderer:
         ui_hunger = None
         agent_labels = {idx: label_tile(str(idx))
                         for idx in range(self.config.num_agents)}
-
         if self.config.asset_path and os.path.isdir(self.config.asset_path):
             # Assets can be overridden by placing PNGs named by enum.
             for terrain_id in Terrain:
@@ -220,6 +220,7 @@ class PygameRenderer:
         assert pygame is not None
         assert self.screen is not None
         assert self.assets is not None
+        observations = world.observations()
 
         frame = np.zeros(
             (self.config.height * self.config.tile_size,
@@ -258,7 +259,7 @@ class PygameRenderer:
                         self._blit(frame, label_tile, agent.x, agent.y)
                 self._draw_held_item(frame, agent, agent.x, agent.y)
 
-        self._draw_inventories(frame, world)
+        self._draw_inventories(frame, world, observations)
 
         if render_mode == "human":
             self._pump_events()
@@ -305,16 +306,25 @@ class PygameRenderer:
     def _inventory_panel_width(self) -> int:
         cols = 4
         padding = max(2, self.config.tile_size // 4)
-        return padding * 2 + cols * self.config.tile_size
+        inventory_width = cols * self.config.tile_size
+        observation_width = self.config.view_size * self._observation_tile_size()
+        return padding * 3 + inventory_width + observation_width
 
-    def _draw_inventories(self, frame: np.ndarray, world: GridcraftWorld) -> None:
+    def _draw_inventories(
+        self,
+        frame: np.ndarray,
+        world: GridcraftWorld,
+        observations: dict[str, dict],
+    ) -> None:
         assert self.assets is not None
         ts = self.config.tile_size
-        items = []
         cols = 4
         rows = 3
         padding = max(2, ts // 4)
-        section_height = padding + ts + padding + rows * ts + padding
+        observation_tile_size = self._observation_tile_size()
+        observation_size = self.config.view_size * observation_tile_size
+        inventory_height = padding + ts + padding + rows * ts
+        section_height = padding + max(inventory_height, observation_size) + padding
         panel_x = self.config.width * ts + padding
         y = padding
 
@@ -353,7 +363,83 @@ class PygameRenderer:
                 if idx == selected_index:
                     self._blit_at(frame, self.assets.ui_selected,
                                   slot_x, slot_y)
+            observation = observations.get(agent_id, {}).get("grid")
+            if observation is not None:
+                observation_x = panel_x + cols * ts + padding
+                self._draw_spatial_observation(
+                    frame,
+                    observation,
+                    observation_x,
+                    slots_y,
+                    observation_tile_size,
+                )
             y += section_height
+
+    def _observation_tile_size(self) -> int:
+        visible_rows = 3
+        return max(2, (visible_rows * self.config.tile_size) // self.config.view_size)
+
+    def _draw_spatial_observation(
+        self,
+        frame: np.ndarray,
+        observation: np.ndarray,
+        x0: int,
+        y0: int,
+        tile_size: int,
+    ) -> None:
+        assert self.assets is not None
+        size = observation.shape[1]
+        for gy in range(size):
+            for gx in range(size):
+                px = x0 + gx * tile_size
+                py = y0 + gy * tile_size
+                terrain_tile = self._scaled_terrain_tile(
+                    Terrain(int(observation[0, gy, gx])),
+                    tile_size,
+                )
+                self._blit_at(frame, terrain_tile, px, py)
+                block_id = Block(int(observation[1, gy, gx]))
+                if block_id != Block.EMPTY:
+                    block_tile = self._scaled_block_tile(block_id, tile_size)
+                    if block_tile is not None:
+                        self._blit_at(frame, block_tile, px, py)
+                entity_id = EntityType(int(observation[2, gy, gx]))
+                entity_tile = self._scaled_entity_tile(entity_id, tile_size)
+                if entity_tile is not None:
+                    self._blit_at(frame, entity_tile, px, py)
+
+    def _scaled_terrain_tile(self, terrain_id: Terrain, size: int) -> np.ndarray:
+        return self._scaled_cached_tile("terrain", int(terrain_id), self.assets.terrain[terrain_id], size)
+
+    def _scaled_block_tile(self, block_id: Block, size: int) -> np.ndarray | None:
+        tile = self.assets.blocks.get(block_id)
+        if tile is None:
+            return None
+        return self._scaled_cached_tile("block", int(block_id), tile, size)
+
+    def _scaled_entity_tile(self, entity_id: EntityType, size: int) -> np.ndarray | None:
+        if entity_id == EntityType.AGENT:
+            return self._scaled_cached_tile("entity", int(entity_id), self.assets.agent, size)
+        if entity_id == EntityType.MOB:
+            return self._scaled_cached_tile("entity", int(entity_id), self.assets.mob, size)
+        if entity_id == EntityType.ITEM:
+            return self._scaled_cached_tile("entity", int(entity_id), self.assets.ui_slot, size)
+        return None
+
+    def _scaled_cached_tile(
+        self,
+        group: str,
+        tile_id: int,
+        tile: np.ndarray,
+        size: int,
+    ) -> np.ndarray:
+        key = (group, tile_id, size)
+        cached = self._scaled_tile_cache.get(key)
+        if cached is not None:
+            return cached
+        scaled = self._scaled_ui_tile(tile, size)
+        self._scaled_tile_cache[key] = scaled
+        return scaled
 
     def _selected_index(self, agent, items: list[Item]) -> int:
         if agent.equipped is not None and agent.equipped in items:
@@ -434,6 +520,9 @@ class PygameRenderer:
             self.screen = None
             self.clock = None
             self.assets = None
+            self._scaled_tile_cache.clear()
+            self._scaled_item_cache.clear()
+            self._text_cache.clear()
 
     def _pump_events(self) -> None:
         pygame = self._pygame

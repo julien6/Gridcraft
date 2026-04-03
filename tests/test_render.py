@@ -16,7 +16,9 @@ pytest.importorskip("pygame")
 def _inventory_panel_width(config: GridcraftConfig) -> int:
     cols = 4
     padding = max(2, config.tile_size // 4)
-    return padding * 2 + cols * config.tile_size
+    observation_tile_size = max(2, (3 * config.tile_size) // config.view_size)
+    observation_width = config.view_size * observation_tile_size
+    return padding * 3 + cols * config.tile_size + observation_width
 
 
 def _nearest_adjacent_cell(world, agent, block_type: Block) -> tuple[int, int] | None:
@@ -63,7 +65,7 @@ def test_render_rgb_array():
 
 def test_render_human():
     config = GridcraftConfig(
-        width=12, height=12, num_agents=2, max_steps=200, max_mobs=1, seed=42, asset_path="../gridcraft/assets/")
+        width=12, height=12, num_agents=2, max_steps=200, max_mobs=1, seed=42, asset_path="gridcraft/assets/")
     env = GridcraftEnv(config=config, render_mode="human")
     obs, infos = env.reset(seed=42)
     # frame_list = [Image.fromarray(env.render())]
