@@ -65,7 +65,7 @@ def test_render_rgb_array():
 
 def test_render_human():
     config = GridcraftConfig(
-        width=12, height=12, num_agents=2, max_steps=200, max_mobs=1, seed=42, asset_path="gridcraft/assets/")
+        width=12, height=12, num_agents=2, max_steps=200, max_mobs=1, seed=42)
     env = GridcraftEnv(config=config, render_mode="human")
     obs, infos = env.reset(seed=42)
     # frame_list = [Image.fromarray(env.render())]

@@ -128,6 +128,8 @@ class PygameRenderer:
         ui_hunger = None
         agent_labels = {idx: label_tile(str(idx))
                         for idx in range(self.config.num_agents)}
+        if self.config.asset_path is None:
+            self.config.asset_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "../gridcraft/assets")
         if self.config.asset_path and os.path.isdir(self.config.asset_path):
             # Assets can be overridden by placing PNGs named by enum.
             for terrain_id in Terrain:
