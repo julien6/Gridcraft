@@ -7,6 +7,7 @@ import numpy as np
 
 from .config import GridcraftConfig
 from .constants import Block, EntityType, Item, ITEM_NAMES, Terrain
+from .entities import AgentState
 from .world import GridcraftWorld
 
 
@@ -216,12 +217,24 @@ class PygameRenderer:
         rgba = np.dstack((rgb, alpha))
         return np.transpose(rgba, (1, 0, 2))
 
-    def render(self, world: GridcraftWorld, render_mode: str) -> np.ndarray | None:
+    def render(
+        self,
+        world: GridcraftWorld | None,
+        render_mode: str,
+        tabular_observations: object | None = None,
+    ) -> np.ndarray | None:
         self._init_pygame()
         pygame = self._pygame
         assert pygame is not None
         assert self.screen is not None
         assert self.assets is not None
+
+        if tabular_observations is not None:
+            frame = self._render_tabular_frame(tabular_observations)
+            return self._present_frame(frame, render_mode)
+
+        if world is None:
+            raise ValueError("world is required when tabular_observations is not provided")
         observations = world.observations()
 
         frame = np.zeros(
@@ -263,6 +276,13 @@ class PygameRenderer:
 
         self._draw_inventories(frame, world, observations)
 
+        return self._present_frame(frame, render_mode)
+
+    def _present_frame(self, frame: np.ndarray, render_mode: str) -> np.ndarray | None:
+        pygame = self._pygame
+        assert pygame is not None
+        assert self.screen is not None
+        assert self.clock is not None
         if render_mode == "human":
             self._pump_events()
             surf = pygame.surfarray.make_surface(
@@ -274,6 +294,90 @@ class PygameRenderer:
         if render_mode == "rgb_array":
             return frame
         return None
+
+    def _render_tabular_frame(self, tabular_observations: object) -> np.ndarray:
+        observations = self._normalize_tabular_observations(tabular_observations)
+        fake_world = self._world_from_tabular_observations(observations)
+        frame = np.zeros(
+            (self.config.height * self.config.tile_size,
+             self.config.width * self.config.tile_size + self._inventory_panel_width(), 3),
+            dtype=np.uint8,
+        )
+        self._draw_inventories(frame, fake_world, observations)
+        return frame
+
+    def _normalize_tabular_observations(self, tabular_observations: object) -> dict[str, dict]:
+        if isinstance(tabular_observations, dict):
+            normalized = {}
+            for agent_id, observation in tabular_observations.items():
+                if isinstance(observation, dict):
+                    grid = np.asarray(observation.get("grid"), dtype=np.int8)
+                    self_vec = np.asarray(
+                        observation.get("self", np.zeros(2 + len(Item))),
+                        dtype=np.int16,
+                    )
+                else:
+                    grid = np.asarray(observation, dtype=np.int8)
+                    self_vec = np.zeros(2 + len(Item), dtype=np.int16)
+                normalized[str(agent_id)] = {
+                    "grid": self._clip_tabular_grid(grid),
+                    "self": self_vec,
+                }
+            return normalized
+
+        arr = np.asarray(tabular_observations, dtype=np.int8)
+        if arr.ndim == 3:
+            arr = arr.reshape(1, *arr.shape)
+        if arr.ndim != 4 or arr.shape[1] != 3:
+            raise ValueError("tabular_observations must be a dict or an array shaped (agents, 3, view, view)")
+        return {
+            f"agent_{idx}": {
+                "grid": self._clip_tabular_grid(arr[idx]),
+                "self": np.zeros(2 + len(Item), dtype=np.int16),
+            }
+            for idx in range(arr.shape[0])
+        }
+
+    @staticmethod
+    def _clip_tabular_grid(grid: np.ndarray) -> np.ndarray:
+        clipped = np.asarray(grid, dtype=np.int16).copy()
+        if clipped.shape[0] != 3:
+            raise ValueError("tabular observation grid must be shaped (3, view, view)")
+        clipped[0] = np.clip(clipped[0], 0, len(Terrain) - 1)
+        clipped[1] = np.clip(clipped[1], 0, len(Block) - 1)
+        clipped[2] = np.clip(clipped[2], 0, len(EntityType) - 1)
+        return clipped.astype(np.int8)
+
+    def _world_from_tabular_observations(self, observations: dict[str, dict]):
+        agents = {}
+        for index, agent_id in enumerate(sorted(observations.keys())):
+            self_vec = np.asarray(observations[agent_id].get("self", []), dtype=np.int16)
+            hp = int(self_vec[0]) if self_vec.size > 0 else self.config.hp_max
+            hunger = int(self_vec[1]) if self_vec.size > 1 else self.config.hunger_max
+            counts = self_vec[2:2 + len(Item)] if self_vec.size >= 2 + len(Item) else np.zeros(len(Item), dtype=np.int16)
+            inventory = {
+                Item(item_index): int(count)
+                for item_index, count in enumerate(counts)
+                if int(count) > 0
+            }
+            agents[agent_id] = AgentState(
+                agent_id=agent_id,
+                x=0,
+                y=index,
+                hp=max(0, hp),
+                hunger=max(0, hunger),
+                inventory=inventory,
+                inventory_order=list(Item),
+                equipped=None,
+                alive=True,
+            )
+
+        class _TabularWorld:
+            pass
+
+        fake_world = _TabularWorld()
+        fake_world.agents = agents
+        return fake_world
 
     def _blit(self, frame: np.ndarray, tile: np.ndarray, x: int, y: int) -> None:
         ts = self.config.tile_size

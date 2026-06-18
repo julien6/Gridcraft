@@ -70,10 +70,10 @@ class GridcraftEnv(ParallelEnv):
                        agent in self.world.agents.items() if agent.alive]
         return observations, result.rewards, result.terminations, result.truncations, result.infos
 
-    def render(self):
+    def render(self, tabular_observations=None):
         if self.render_mode is None:
             return None
-        return self.renderer.render(self.world, self.render_mode)
+        return self.renderer.render(self.world, self.render_mode, tabular_observations=tabular_observations)
 
     def close(self):
         if self.renderer:
