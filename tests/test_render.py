@@ -72,6 +72,26 @@ def test_render_tabular_observations_rgb_array():
     obs, infos = env.reset(seed=5)
 
     frame = env.render(tabular_observations=obs)
+    base_width = config.width * config.tile_size + _inventory_panel_width(config)
+    assert frame is not None
+    assert frame.shape == (config.height * config.tile_size,
+                           base_width + _inventory_panel_width(config), 3)
+    assert frame[:, :config.width * config.tile_size].max() > 0
+    assert frame[:, config.width * config.tile_size:base_width].max() > 0
+    assert frame[:, base_width:].max() > 0
+
+    env.close()
+
+
+def test_render_tabular_observations_without_world_rgb_array():
+    os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
+
+    config = GridcraftConfig(
+        width=16, height=16, num_agents=1, seed=5, tile_size=8)
+    env = GridcraftEnv(config=config, render_mode="rgb_array")
+    obs, infos = env.reset(seed=5)
+
+    frame = env.renderer.render(None, "rgb_array", tabular_observations=obs)
     assert frame is not None
     assert frame.shape == (config.height * config.tile_size,
                            config.width * config.tile_size + _inventory_panel_width(config), 3)

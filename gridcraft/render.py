@@ -44,7 +44,7 @@ class PygameRenderer:
             pygame.init()
             pygame.display.set_caption("Gridcraft")
             self._pygame = pygame
-            width = self.config.width * self.config.tile_size + self._inventory_panel_width()
+            width = self._frame_width()
             height = self.config.height * self.config.tile_size
             self.screen = pygame.display.set_mode((width, height))
             self.clock = pygame.time.Clock()
@@ -229,17 +229,31 @@ class PygameRenderer:
         assert self.screen is not None
         assert self.assets is not None
 
-        if tabular_observations is not None:
+        if tabular_observations is not None and world is None:
             frame = self._render_tabular_frame(tabular_observations)
             return self._present_frame(frame, render_mode)
 
         if world is None:
             raise ValueError("world is required when tabular_observations is not provided")
         observations = world.observations()
+        frame = self._render_world_frame(world, observations, tabular_observations)
+        return self._present_frame(frame, render_mode)
 
+    def _render_world_frame(
+        self,
+        world: GridcraftWorld,
+        observations: dict[str, dict],
+        extra_tabular_observations: object | None = None,
+    ) -> np.ndarray:
+        grid_width = self.config.width * self.config.tile_size
+        base_width = grid_width + self._inventory_panel_width()
+        if extra_tabular_observations is not None:
+            frame_width = base_width + self._inventory_panel_width()
+        else:
+            frame_width = base_width
         frame = np.zeros(
             (self.config.height * self.config.tile_size,
-             self.config.width * self.config.tile_size + self._inventory_panel_width(), 3),
+             frame_width, 3),
             dtype=np.uint8,
         )
 
@@ -276,7 +290,18 @@ class PygameRenderer:
 
         self._draw_inventories(frame, world, observations)
 
-        return self._present_frame(frame, render_mode)
+        if extra_tabular_observations is not None:
+            extra_observations = self._normalize_tabular_observations(extra_tabular_observations)
+            fake_world = self._world_from_tabular_observations(extra_observations)
+            extra_frame = np.zeros(
+                (self.config.height * self.config.tile_size,
+                 base_width, 3),
+                dtype=np.uint8,
+            )
+            self._draw_inventories(extra_frame, fake_world, extra_observations)
+            frame[:, base_width:, :] = extra_frame[:, grid_width:, :]
+
+        return frame
 
     def _present_frame(self, frame: np.ndarray, render_mode: str) -> np.ndarray | None:
         pygame = self._pygame
@@ -284,6 +309,8 @@ class PygameRenderer:
         assert self.screen is not None
         assert self.clock is not None
         if render_mode == "human":
+            if self.screen.get_size() != (frame.shape[1], frame.shape[0]):
+                self.screen = pygame.display.set_mode((frame.shape[1], frame.shape[0]))
             self._pump_events()
             surf = pygame.surfarray.make_surface(
                 np.transpose(frame, (1, 0, 2)))
@@ -415,6 +442,9 @@ class PygameRenderer:
         inventory_width = cols * self.config.tile_size
         observation_width = self.config.view_size * self._observation_tile_size()
         return padding * 3 + inventory_width + observation_width
+
+    def _frame_width(self) -> int:
+        return self.config.width * self.config.tile_size + self._inventory_panel_width()
 
     def _draw_inventories(
         self,
