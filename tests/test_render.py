@@ -1,9 +1,11 @@
 import os
-import random
+from collections import deque
+
 import pytest
 
 from gridcraft.config import GridcraftConfig
 from gridcraft.constants import ACTION_NAMES, Block, Item, Terrain
+from gridcraft.entities import MobState
 from gridcraft.env import GridcraftEnv
 # from PIL import Image
 
@@ -45,6 +47,62 @@ def _move_towards(agent, target_x: int, target_y: int, action_index: dict[str, i
     if dy != 0:
         return action_index["move_s" if dy > 0 else "move_n"]
     return action_index["stay"]
+
+
+def _scripted_move_towards(world, agent, target: tuple[int, int], action_index: dict[str, int]) -> int:
+    start = (agent.x, agent.y)
+    queue = deque([(start, None)])
+    visited = {start}
+    directions = [
+        (1, 0, "move_e"),
+        (-1, 0, "move_w"),
+        (0, 1, "move_s"),
+        (0, -1, "move_n"),
+    ]
+
+    while queue:
+        (x, y), first_action = queue.popleft()
+        if (x, y) == target:
+            return action_index[first_action] if first_action is not None else action_index["stay"]
+
+        for dx, dy, action_name in directions:
+            nx, ny = x + dx, y + dy
+            position = (nx, ny)
+            if position in visited:
+                continue
+            if not world.is_walkable(nx, ny):
+                continue
+            occupant = world._agent_at(nx, ny)
+            if occupant is not None and occupant is not agent:
+                continue
+            if world._mob_at(nx, ny):
+                continue
+            visited.add(position)
+            queue.append((position, first_action or action_name))
+
+    return action_index["stay"]
+
+
+def _nearest_adjacent_mob_cell(world, agent) -> tuple[int, int] | None:
+    best = None
+    best_dist = None
+    for mob in world.mobs:
+        if not mob.alive:
+            continue
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            sx, sy = mob.x + dx, mob.y + dy
+            if not world.is_walkable(sx, sy):
+                continue
+            if world._mob_at(sx, sy):
+                continue
+            occupant = world._agent_at(sx, sy)
+            if occupant is not None and occupant is not agent:
+                continue
+            dist = abs(agent.x - sx) + abs(agent.y - sy)
+            if best_dist is None or dist < best_dist:
+                best = (sx, sy)
+                best_dist = dist
+    return best
 
 
 def test_render_rgb_array():
@@ -103,7 +161,15 @@ def test_render_tabular_observations_without_world_rgb_array():
 
 def test_render_human():
     config = GridcraftConfig(
-        width=12, height=12, num_agents=2, max_steps=200, max_mobs=1, seed=42)
+        width=12,
+        height=12,
+        num_agents=2,
+        max_steps=160,
+        max_mobs=0,
+        mob_move_prob=0.0,
+        tree_apple_drop_chance=0.0,
+        seed=42,
+    )
     env = GridcraftEnv(config=config, render_mode="human")
     obs, infos = env.reset(seed=42)
     # frame_list = [Image.fromarray(env.render())]
@@ -111,131 +177,87 @@ def test_render_human():
     action_index = {name: idx for idx, name in enumerate(ACTION_NAMES)}
     target_agent = env.possible_agents[0]
     agent_state = env.world.agents[target_agent]
-    tree_positions = list(zip(*((env.world.blocks == Block.TREE).nonzero())))
-    if len(tree_positions) < 4:
-        needed = 4 - len(tree_positions)
-        for dy in range(-2, 3):
-            for dx in range(-2, 3):
-                if needed == 0:
-                    break
-                x = agent_state.x + dx
-                y = agent_state.y + dy
-                if 0 <= x < config.width and 0 <= y < config.height:
-                    if env.world.terrain[y, x] != Terrain.WATER and env.world.blocks[y, x] == Block.EMPTY:
-                        env.world.blocks[y, x] = Block.TREE
-                        needed -= 1
-            if needed == 0:
-                break
-    stone_positions = list(zip(*((env.world.blocks == Block.STONE).nonzero())))
-    if not stone_positions:
-        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-            x = agent_state.x + dx
-            y = agent_state.y + dy
-            if 0 <= x < config.width and 0 <= y < config.height:
-                if env.world.terrain[y, x] != Terrain.WATER and env.world.blocks[y, x] == Block.EMPTY:
-                    env.world.blocks[y, x] = Block.STONE
-                    break
+
+    env.world.terrain[:] = Terrain.GRASS
+    env.world.blocks[:] = Block.EMPTY
+    env.world.mobs.clear()
+    env.world.items.clear()
+
+    agent_state.x, agent_state.y = 2, 2
+    agent_state.visited_positions = {(agent_state.x, agent_state.y)}
+    other_agent = env.world.agents[env.possible_agents[1]]
+    other_agent.x, other_agent.y = 10, 10
+    other_agent.visited_positions = {(other_agent.x, other_agent.y)}
+
+    env.world.blocks[2, 4] = Block.TREE
+    env.world.blocks[4, 2] = Block.TREE
+
     phase = "gather_wood"
-    prev_hp = {
-        agent_id: env.world.agents[agent_id].hp for agent_id in env.world.agents}
-    flee_ticks = {agent_id: 0 for agent_id in env.world.agents}
-    for _ in range(200):
-        actions = {agent: random.choice(
-            list(action_index.values())) for agent in env.agents}
+    spawned_mob = None
+    killed_mob = False
+    for _ in range(config.max_steps):
+        actions = {agent: action_index["stay"] for agent in env.agents}
         if target_agent in env.agents:
             agent_state = env.world.agents[target_agent]
             inventory = agent_state.inventory
             wood = inventory.get(Item.WOOD, 0)
             plank = inventory.get(Item.PLANK, 0)
             stick = inventory.get(Item.STICK, 0)
-            pickaxe = inventory.get(Item.WOOD_PICKAXE, 0)
-            stone = inventory.get(Item.STONE, 0)
 
-            took_damage = agent_state.hp < prev_hp.get(
-                target_agent, agent_state.hp)
-            prev_hp[target_agent] = agent_state.hp
-            if took_damage:
-                flee_ticks[target_agent] = 3
-
-            if flee_ticks.get(target_agent, 0) > 0:
-                adj_mob = None
-                for mob in env.world.mobs:
-                    if mob.alive and abs(mob.x - agent_state.x) + abs(mob.y - agent_state.y) == 1:
-                        adj_mob = mob
-                        break
-                if adj_mob is not None:
-                    actions[target_agent] = action_index["attack"]
+            if phase == "gather_wood":
+                if wood >= 2:
+                    phase = "craft_planks"
                 else:
-                    nearest = None
-                    best_dist = None
-                    for mob in env.world.mobs:
-                        if not mob.alive:
-                            continue
-                        dist = abs(mob.x - agent_state.x) + \
-                            abs(mob.y - agent_state.y)
-                        if best_dist is None or dist < best_dist:
-                            best_dist = dist
-                            nearest = mob
-                    if nearest is not None:
-                        dx = agent_state.x - nearest.x
-                        dy = agent_state.y - nearest.y
-                        if abs(dx) > abs(dy):
-                            actions[target_agent] = action_index["move_e" if dx >
-                                                                 0 else "move_w"]
-                        elif dy != 0:
-                            actions[target_agent] = action_index["move_s" if dy >
-                                                                 0 else "move_n"]
-                flee_ticks[target_agent] -= 1
-            elif phase == "gather_wood":
-                if wood >= 4:
-                    phase = "craft_plank"
-                else:
-                    target = _nearest_adjacent_cell(
-                        env.world, agent_state, Block.TREE)
-                    if target is not None:
-                        tx, ty = target
-                        if agent_state.x == tx and agent_state.y == ty:
-                            actions[target_agent] = action_index["harvest"]
-                        else:
-                            actions[target_agent] = _move_towards(
-                                agent_state, tx, ty, action_index)
-            elif phase == "craft_plank":
-                if plank >= 4:
-                    phase = "craft_stick"
+                    target = _nearest_adjacent_cell(env.world, agent_state, Block.TREE)
+                    if target is not None and (agent_state.x, agent_state.y) == target:
+                        actions[target_agent] = action_index["harvest"]
+                    elif target is not None:
+                        actions[target_agent] = _scripted_move_towards(
+                            env.world, agent_state, target, action_index)
+            elif phase == "craft_planks":
+                if plank >= 3:
+                    phase = "craft_sticks"
                 elif wood > 0:
                     actions[target_agent] = action_index["craft_plank"]
                 else:
                     phase = "gather_wood"
-            elif phase == "craft_stick":
-                if stick >= 4:
-                    phase = "craft_pickaxe"
+            elif phase == "craft_sticks":
+                if stick >= 1:
+                    phase = "craft_sword"
                 elif plank >= 2:
                     actions[target_agent] = action_index["craft_stick"]
                 else:
-                    phase = "craft_plank"
-            elif phase == "craft_pickaxe":
-                if pickaxe > 0 or agent_state.equipped == Item.WOOD_PICKAXE:
-                    phase = "move_to_stone"
+                    phase = "craft_planks"
+            elif phase == "craft_sword":
+                if agent_state.equipped == Item.WOOD_SWORD:
+                    phase = "spawn_zombie"
                 elif stick >= 1 and plank >= 1:
-                    actions[target_agent] = action_index["craft_wood_pickaxe"]
+                    actions[target_agent] = action_index["craft_wood_sword"]
                 else:
-                    phase = "craft_plank"
-            elif phase == "move_to_stone":
-                if stone >= 1:
+                    phase = "craft_planks"
+            elif phase == "spawn_zombie":
+                spawned_mob = MobState(mob_id=1, x=8, y=2, hp=6)
+                env.world.mobs.append(spawned_mob)
+                phase = "hunt_zombie"
+            elif phase == "hunt_zombie":
+                alive_mobs = [mob for mob in env.world.mobs if mob.alive]
+                if not alive_mobs:
+                    killed_mob = True
                     phase = "done"
                 else:
-                    target = _nearest_adjacent_cell(
-                        env.world, agent_state, Block.STONE)
-                    if target is not None:
-                        tx, ty = target
-                        if agent_state.x == tx and agent_state.y == ty:
-                            actions[target_agent] = action_index["harvest"]
-                        else:
-                            actions[target_agent] = _move_towards(
-                                agent_state, tx, ty, action_index)
+                    mob = alive_mobs[0]
+                    if abs(mob.x - agent_state.x) + abs(mob.y - agent_state.y) == 1:
+                        actions[target_agent] = action_index["attack"]
+                    else:
+                        target = _nearest_adjacent_mob_cell(env.world, agent_state)
+                        if target is not None:
+                            actions[target_agent] = _scripted_move_towards(
+                                env.world, agent_state, target, action_index)
         obs, rewards, terminations, truncations, infos = env.step(actions)
         env.render()
         assert all(isinstance(value, float) for value in rewards.values())
+        if phase == "done":
+            break
         if all(terminations.values()) or all(truncations.values()):
             break
         # img = Image.fromarray(env.render())
@@ -243,6 +265,9 @@ def test_render_human():
 
     # frame_list[0].save("out.gif", save_all=True,
     #                    append_images=frame_list[1:], duration=5, loop=0)
+    assert agent_state.equipped == Item.WOOD_SWORD
+    assert spawned_mob is not None
+    assert killed_mob
     env.close()
 
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 
 import numpy as np
@@ -51,6 +52,7 @@ class GridcraftWorld:
                 hunger=self.config.hunger_max,
                 inventory={},
             )
+            self.agents[agent_id].visited_positions.add((x, y))
         self._spawn_initial_mobs()
 
     def _generate_terrain(self) -> None:
@@ -171,7 +173,7 @@ class GridcraftWorld:
             agent = self.agents[agent_id]
             if not agent.alive:
                 continue
-            self._apply_action(agent, action)
+            self._apply_action(agent, action, rewards)
 
         self._move_mobs()
         self._resolve_mob_attacks(rewards)
@@ -191,30 +193,30 @@ class GridcraftWorld:
 
         if alive_agents:
             for agent_id in rewards:
-                rewards[agent_id] += 1.0
+                rewards[agent_id] += self.config.survival_reward
         else:
             for agent_id in rewards:
                 rewards[agent_id] -= 100.0
 
         return StepResult(rewards=rewards, terminations=terminations, truncations=truncations, infos=infos)
 
-    def _apply_action(self, agent: AgentState, action: int) -> None:
+    def _apply_action(self, agent: AgentState, action: int, rewards: dict[str, float]) -> None:
         action_name = ACTION_NAMES[action]
         if action_name.startswith("move"):
-            self._move_agent(agent, action_name)
+            self._move_agent(agent, action_name, rewards)
         elif action_name == "harvest":
-            self._harvest(agent)
+            self._harvest(agent, rewards)
         elif action_name == "pickup":
-            self._pickup(agent)
+            self._pickup(agent, rewards)
         elif action_name == "attack":
-            self._attack(agent)
+            self._attack(agent, rewards)
         elif action_name == "eat":
-            self._eat(agent)
+            self._eat(agent, rewards)
         elif action_name.startswith("craft"):
             recipe_name = ACTION_TO_RECIPE[action_name]
-            self._craft(agent, recipe_name)
+            self._craft(agent, recipe_name, rewards)
 
-    def _move_agent(self, agent: AgentState, action_name: str) -> None:
+    def _move_agent(self, agent: AgentState, action_name: str, rewards: dict[str, float]) -> None:
         dx, dy = 0, 0
         if action_name == "move_n":
             dy = -1
@@ -227,8 +229,12 @@ class GridcraftWorld:
         nx, ny = agent.x + dx, agent.y + dy
         if self.is_walkable(nx, ny) and not self._agent_at(nx, ny) and not self._mob_at(nx, ny):
             agent.x, agent.y = nx, ny
+            if (nx, ny) not in agent.visited_positions:
+                agent.visited_positions.add((nx, ny))
+                rewards[agent.agent_id] += self.config.new_cell_reward
+            self._charge_hunger_action(agent, "move")
 
-    def _harvest(self, agent: AgentState) -> None:
+    def _harvest(self, agent: AgentState, rewards: dict[str, float]) -> None:
         for dx in [-1, 0, 1]:
             for dy in [-1, 0, 1]:
                 if abs(dx) + abs(dy) != 1:
@@ -239,41 +245,54 @@ class GridcraftWorld:
                     if block == Block.TREE:
                         self.blocks[ny, nx] = Block.EMPTY
                         self._add_item(agent, Item.WOOD, 1)
+                        rewards[agent.agent_id] += self.config.harvest_wood_reward
+                        if self.rng.random() < self.config.tree_apple_drop_chance:
+                            self._add_item(agent, Item.APPLE, 1)
+                            rewards[agent.agent_id] += self.config.harvest_tree_apple_reward
+                        self._charge_hunger_action(agent, "harvest")
                         return
                     elif block == Block.STONE:
                         if agent.equipped in (Item.WOOD_PICKAXE, Item.STONE_PICKAXE):
                             self.blocks[ny, nx] = Block.EMPTY
                             self._add_item(agent, Item.STONE, 1)
+                            rewards[agent.agent_id] += self.config.harvest_stone_reward
+                            self._charge_hunger_action(agent, "harvest")
                             return
 
-    def _pickup(self, agent: AgentState) -> None:
+    def _pickup(self, agent: AgentState, rewards: dict[str, float]) -> None:
         items_here = self._items_at(agent.x, agent.y)
         if not items_here:
             return
         for item in items_here:
             self._add_item(agent, item.item, item.count)
+            rewards[agent.agent_id] += self.config.pickup_item_reward * item.count
         self.items = [item for item in self.items if item not in items_here]
 
-    def _attack(self, agent: AgentState) -> None:
+    def _attack(self, agent: AgentState, rewards: dict[str, float]) -> None:
         for mob in self.mobs:
             if mob.alive and abs(mob.x - agent.x) + abs(mob.y - agent.y) == 1:
+                agent.last_attack_step = self.step_count
+                self._charge_hunger_action(agent, "attack")
+                rewards[agent.agent_id] += self.config.attack_hit_reward
                 damage = 2
                 if agent.equipped in (Item.WOOD_SWORD, Item.STONE_SWORD):
                     damage = 4 if agent.equipped == Item.STONE_SWORD else 3
                 mob.hp -= damage
                 if mob.hp <= 0:
                     mob.alive = False
+                    rewards[agent.agent_id] += self.config.mob_kill_reward
                     if self.rng.random() < self.config.item_drop_chance:
                         self.items.append(
                             ItemDrop(item=Item.APPLE, count=1, x=mob.x, y=mob.y))
                 return
 
-    def _eat(self, agent: AgentState) -> None:
-        if agent.inventory.get(Item.APPLE, 0) > 0:
+    def _eat(self, agent: AgentState, rewards: dict[str, float]) -> None:
+        if agent.hunger < self.config.hunger_max and agent.inventory.get(Item.APPLE, 0) > 0:
             agent.inventory[Item.APPLE] -= 1
             agent.hunger = min(self.config.hunger_max, agent.hunger + 6)
+            rewards[agent.agent_id] += self.config.eat_apple_reward
 
-    def _craft(self, agent: AgentState, recipe_name: str) -> None:
+    def _craft(self, agent: AgentState, recipe_name: str, rewards: dict[str, float]) -> None:
         if not self.config.craft_anywhere and self.blocks[agent.y, agent.x] != Block.CRAFTING_TABLE:
             return
         recipe = {
@@ -289,6 +308,18 @@ class GridcraftWorld:
                 agent.inventory[item] -= count
             for item, count in recipe["outputs"].items():
                 self._add_item(agent, item, count)
+            rewards[agent.agent_id] += self._craft_reward(recipe_name)
+
+    def _craft_reward(self, recipe_name: str) -> float:
+        if recipe_name == "plank":
+            return self.config.craft_plank_reward
+        if recipe_name == "stick":
+            return self.config.craft_stick_reward
+        if recipe_name in ("wood_sword", "wood_pickaxe"):
+            return self.config.craft_wood_tool_reward
+        if recipe_name in ("stone_sword", "stone_pickaxe"):
+            return self.config.craft_stone_tool_reward
+        return 0.0
 
     def _add_item(self, agent: AgentState, item: Item, count: int) -> None:
         if item not in agent.inventory:
@@ -296,6 +327,29 @@ class GridcraftWorld:
         agent.inventory[item] = agent.inventory.get(item, 0) + count
         if item in (Item.WOOD_SWORD, Item.STONE_SWORD, Item.WOOD_PICKAXE, Item.STONE_PICKAXE):
             agent.equipped = item
+
+    def _charge_hunger_action(self, agent: AgentState, action_kind: str) -> None:
+        intervals = {
+            "move": self.config.move_hunger_cost_interval,
+            "harvest": self.config.harvest_hunger_cost_interval,
+            "attack": self.config.attack_hunger_cost_interval,
+        }
+        counters = {
+            "move": "successful_moves_since_hunger_cost",
+            "harvest": "successful_harvests_since_hunger_cost",
+            "attack": "successful_attacks_since_hunger_cost",
+        }
+        interval = intervals[action_kind]
+        counter_name = counters[action_kind]
+        if interval <= 0:
+            agent.hunger = max(0, agent.hunger - 1)
+            return
+
+        count = getattr(agent, counter_name) + 1
+        if count >= interval:
+            agent.hunger = max(0, agent.hunger - 1)
+            count = 0
+        setattr(agent, counter_name, count)
 
     def _move_mobs(self) -> None:
         for mob in self.mobs:
@@ -305,16 +359,59 @@ class GridcraftWorld:
                 continue
             target = self._nearest_agent(mob)
             if target and abs(target.x - mob.x) + abs(target.y - mob.y) <= self.config.mob_aggro_radius:
-                dx = int(np.sign(target.x - mob.x))
-                dy = int(np.sign(target.y - mob.y))
-                nx, ny = mob.x + dx, mob.y + dy
-                if self.is_walkable(nx, ny) and not self._mob_at(nx, ny) and not self._agent_at(nx, ny):
+                next_step = self._next_step_towards_agent(mob, target)
+                if next_step is not None:
+                    nx, ny = next_step
                     mob.x, mob.y = nx, ny
+                else:
+                    self._move_mob_randomly(mob)
             else:
-                dx, dy = self.rng.choice([-1, 0, 1], 2)
-                nx, ny = mob.x + int(dx), mob.y + int(dy)
-                if self.is_walkable(nx, ny) and not self._mob_at(nx, ny) and not self._agent_at(nx, ny):
-                    mob.x, mob.y = nx, ny
+                self._move_mob_randomly(mob)
+
+    def _move_mob_randomly(self, mob: MobState) -> None:
+        directions = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+        order = self.rng.permutation(len(directions))
+        for index in order:
+            dx, dy = directions[int(index)]
+            nx, ny = mob.x + dx, mob.y + dy
+            if self._can_mob_move_to(nx, ny):
+                mob.x, mob.y = nx, ny
+                return
+
+    def _next_step_towards_agent(self, mob: MobState, target: AgentState) -> tuple[int, int] | None:
+        start = (mob.x, mob.y)
+        queue = deque([(start, None, 0)])
+        visited = {start}
+        best_step = None
+        best_distance = abs(target.x - mob.x) + abs(target.y - mob.y)
+        directions = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+
+        while queue:
+            (x, y), first_step, depth = queue.popleft()
+            distance = abs(target.x - x) + abs(target.y - y)
+            if first_step is not None and distance < best_distance:
+                best_distance = distance
+                best_step = first_step
+                if distance == 1:
+                    return best_step
+
+            if depth >= self.config.mob_aggro_radius:
+                continue
+
+            for dx, dy in directions:
+                nx, ny = x + dx, y + dy
+                position = (nx, ny)
+                if position in visited:
+                    continue
+                if not self._can_mob_move_to(nx, ny):
+                    continue
+                visited.add(position)
+                queue.append((position, first_step or position, depth + 1))
+
+        return best_step
+
+    def _can_mob_move_to(self, x: int, y: int) -> bool:
+        return self.is_walkable(x, y) and not self._mob_at(x, y) and not self._agent_at(x, y)
 
     def _nearest_agent(self, mob: MobState) -> AgentState | None:
         alive_agents = [agent for agent in self.agents.values() if agent.alive]
@@ -328,23 +425,32 @@ class GridcraftWorld:
                 continue
             for agent in self.agents.values():
                 if agent.alive and abs(agent.x - mob.x) + abs(agent.y - mob.y) == 1:
+                    if agent.last_attack_step == self.step_count:
+                        continue
                     agent.hp -= self.config.mob_damage
                     rewards[agent.agent_id] -= self.config.mob_damage
                     if agent.hp <= 0:
                         agent.alive = False
 
     def _handle_hunger(self, rewards: dict[str, float]) -> None:
+        if self.step_count % self.config.health_regen_ticks == 0:
+            for agent in self.agents.values():
+                if agent.alive and agent.hunger == self.config.hunger_max and agent.hp < self.config.hp_max:
+                    agent.hp = min(self.config.hp_max, agent.hp + 1)
+                    rewards[agent.agent_id] += self.config.health_regen_reward
+
         if self.step_count % self.config.hunger_decay_ticks != 0:
             return
         for agent in self.agents.values():
             if not agent.alive:
                 continue
-            agent.hunger = max(0, agent.hunger - 1)
             if agent.hunger == 0:
-                agent.hp -= self.config.starvation_damage
-                rewards[agent.agent_id] -= float(self.config.starvation_damage)
-                if agent.hp <= 0:
-                    agent.alive = False
+                old_hp = agent.hp
+                agent.hp = max(
+                    self.config.starvation_min_hp,
+                    agent.hp - self.config.starvation_damage,
+                )
+                rewards[agent.agent_id] -= float(old_hp - agent.hp)
 
     def _cleanup_entities(self) -> None:
         self.mobs = [mob for mob in self.mobs if mob.alive]

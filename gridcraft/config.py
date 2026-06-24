@@ -18,6 +18,11 @@ class GridcraftConfig:
     hunger_max: int = 20
     hunger_decay_ticks: int = 5
     starvation_damage: int = 1
+    starvation_min_hp: int = 1
+    health_regen_ticks: int = 5
+    move_hunger_cost_interval: int = 5
+    harvest_hunger_cost_interval: int = 3
+    attack_hunger_cost_interval: int = 3
 
     mob_spawn_rate: int = 10
     max_mobs: int = 6
@@ -30,6 +35,22 @@ class GridcraftConfig:
     max_steps: int = 500
 
     item_drop_chance: float = 0.2
+    tree_apple_drop_chance: float = 0.5
+
+    survival_reward: float = 0.05
+    new_cell_reward: float = 0.05
+    harvest_wood_reward: float = 1.0
+    harvest_tree_apple_reward: float = 1.5
+    harvest_stone_reward: float = 4.0
+    pickup_item_reward: float = 1.0
+    eat_apple_reward: float = 2.0
+    health_regen_reward: float = 0.5
+    attack_hit_reward: float = 0.5
+    mob_kill_reward: float = 8.0
+    craft_plank_reward: float = 1.0
+    craft_stick_reward: float = 2.0
+    craft_wood_tool_reward: float = 5.0
+    craft_stone_tool_reward: float = 8.0
 
     craft_anywhere: bool = True
 

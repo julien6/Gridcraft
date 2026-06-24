@@ -15,6 +15,11 @@ class AgentState:
     inventory: dict[Item, int] = field(default_factory=dict)
     inventory_order: list[Item] = field(default_factory=list)
     equipped: Item | None = None
+    visited_positions: set[tuple[int, int]] = field(default_factory=set)
+    successful_moves_since_hunger_cost: int = 0
+    successful_harvests_since_hunger_cost: int = 0
+    successful_attacks_since_hunger_cost: int = 0
+    last_attack_step: int = -1
     alive: bool = True
 
 
