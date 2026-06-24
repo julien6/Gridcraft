@@ -39,7 +39,7 @@ def test_vgridcraft_successful_move_rewards_new_cell():
 
     assert int(env.agent_x[0, 0]) == 4
     assert int(env.agent_y[0, 0]) == 3
-    assert float(reward[0, 0]) == env.config.new_cell_reward + env.config.survival_reward
+    assert float(reward[0, 0]) == pytest.approx(env.config.new_cell_reward + env.config.survival_reward)
     assert not bool(done[0])
     assert not bool(truncated[0])
 
@@ -64,7 +64,7 @@ def test_vgridcraft_harvest_tree_adds_wood_and_apple():
     assert int(env.blocks[0, 3, 4]) == BLOCK_EMPTY
     assert int(env.inventory[0, 0, ITEM_WOOD]) == 1
     assert int(env.inventory[0, 0, ITEM_APPLE]) == 1
-    assert float(reward[0, 0]) == env.config.harvest_wood_reward + env.config.harvest_tree_apple_reward + env.config.survival_reward
+    assert float(reward[0, 0]) == pytest.approx(env.config.harvest_wood_reward + env.config.harvest_tree_apple_reward + env.config.survival_reward)
 
 
 def test_vgridcraft_craft_plank_consumes_wood():
@@ -75,4 +75,17 @@ def test_vgridcraft_craft_plank_consumes_wood():
 
     assert int(env.inventory[0, 0, ITEM_WOOD]) == 0
     assert int(env.inventory[0, 0, ITEM_PLANK]) == 2
-    assert float(reward[0, 0]) == env.config.craft_plank_reward + env.config.survival_reward
+    assert float(reward[0, 0]) == pytest.approx(env.config.craft_plank_reward + env.config.survival_reward)
+
+
+def test_vgridcraft_render_rgb_array_uses_gridcraft_renderer():
+    pytest.importorskip("pygame")
+    env = _env()
+
+    frame = env.render(env_index=0, mode="rgb_array")
+
+    assert frame.ndim == 3
+    assert frame.shape[-1] == 3
+    assert frame.shape[0] == env.config.height * 48
+    assert frame.shape[1] > env.config.width * 48
+    env.close()
