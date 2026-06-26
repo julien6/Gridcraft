@@ -22,6 +22,8 @@ class RenderAssets:
     ui_selected: np.ndarray
     ui_heart: np.ndarray | None
     ui_hunger: np.ndarray | None
+    unknown: np.ndarray
+    unknown_item: np.ndarray
     agent_labels: dict[int, np.ndarray]
 
 
@@ -68,6 +70,22 @@ class PygameRenderer:
             shadow_rect = shadow.get_rect()
             shadow_rect.bottomright = (rect.right + 1, rect.bottom + 1)
             surface.blit(shadow, shadow_rect)
+            surface.blit(text_surface, rect)
+            rgb = pygame.surfarray.array3d(surface)
+            alpha = pygame.surfarray.array_alpha(surface)
+            rgba = np.dstack((rgb, alpha))
+            return np.transpose(rgba, (1, 0, 2))
+
+        def unknown_tile() -> np.ndarray:
+            pygame = self._pygame
+            assert pygame is not None
+            ts = self.config.tile_size
+            font = pygame.font.Font(None, max(14, ts // 2 + 4))
+            surface = pygame.Surface((ts, ts), pygame.SRCALPHA)
+            surface.fill((245, 245, 245, 255))
+            pygame.draw.rect(surface, (160, 160, 160, 255), surface.get_rect(), width=max(1, ts // 16))
+            text_surface = font.render("?", True, (50, 50, 50))
+            rect = text_surface.get_rect(center=(ts // 2, ts // 2))
             surface.blit(text_surface, rect)
             rgb = pygame.surfarray.array3d(surface)
             alpha = pygame.surfarray.array_alpha(surface)
@@ -127,6 +145,8 @@ class PygameRenderer:
         ui_selected = selected_tile()
         ui_heart = None
         ui_hunger = None
+        unknown = unknown_tile()
+        unknown_item = unknown
         agent_labels = {idx: label_tile(str(idx))
                         for idx in range(self.config.num_agents)}
         if self.config.asset_path is None:
@@ -164,6 +184,12 @@ class PygameRenderer:
                 ui_selected = custom_selected
             ui_heart = self._load_png("ui_heart.png")
             ui_hunger = self._load_png("ui_hunger.png")
+            custom_unknown = self._load_png("interrogation_block.png")
+            if custom_unknown is not None:
+                unknown = custom_unknown
+            custom_unknown_item = self._load_png("interrogation_item.png")
+            if custom_unknown_item is not None:
+                unknown_item = custom_unknown_item
 
         return RenderAssets(
             terrain=terrain,
@@ -175,6 +201,8 @@ class PygameRenderer:
             ui_selected=ui_selected,
             ui_heart=ui_heart,
             ui_hunger=ui_hunger,
+            unknown=unknown,
+            unknown_item=unknown_item,
             agent_labels=agent_labels,
         )
 
@@ -222,6 +250,7 @@ class PygameRenderer:
         world: GridcraftWorld | None,
         render_mode: str,
         tabular_observations: object | None = None,
+        overlay_info: object | None = None,
     ) -> np.ndarray | None:
         self._init_pygame()
         pygame = self._pygame
@@ -231,12 +260,14 @@ class PygameRenderer:
 
         if tabular_observations is not None and world is None:
             frame = self._render_tabular_frame(tabular_observations)
+            self._draw_overlay_info(frame, overlay_info)
             return self._present_frame(frame, render_mode)
 
         if world is None:
             raise ValueError("world is required when tabular_observations is not provided")
         observations = world.observations()
         frame = self._render_world_frame(world, observations, tabular_observations)
+        self._draw_overlay_info(frame, overlay_info)
         return self._present_frame(frame, render_mode)
 
     def _render_world_frame(
@@ -322,6 +353,58 @@ class PygameRenderer:
             return frame
         return None
 
+    def _draw_overlay_info(self, frame: np.ndarray, overlay_info: object | None) -> None:
+        if overlay_info is None:
+            return
+        text = self._format_overlay_info(overlay_info)
+        if not text:
+            return
+        pygame = self._pygame
+        assert pygame is not None
+        font_size = max(14, self.config.tile_size // 3)
+        font = pygame.font.Font(None, font_size)
+        surface = font.render(text, True, (255, 255, 255))
+        pad_x = max(8, self.config.tile_size // 5)
+        pad_y = max(4, self.config.tile_size // 8)
+        width = surface.get_width() + pad_x * 2
+        height = surface.get_height() + pad_y * 2
+        x0 = max(0, (frame.shape[1] - width) // 2)
+        y0 = max(0, frame.shape[0] - height - pad_y)
+        bg = np.zeros((height, width, 4), dtype=np.uint8)
+        bg[:, :, :3] = (0, 0, 0)
+        bg[:, :, 3] = 185
+        self._blit_at(frame, bg, x0, y0)
+        rgb = pygame.surfarray.array3d(surface)
+        alpha = pygame.surfarray.array_alpha(surface)
+        rgba = np.dstack((rgb, alpha))
+        tile = np.transpose(rgba, (1, 0, 2))
+        self._blit_at(frame, tile, x0 + pad_x, y0 + pad_y)
+
+    @staticmethod
+    def _format_overlay_info(overlay_info: object) -> str:
+        if isinstance(overlay_info, str):
+            return overlay_info
+        if not isinstance(overlay_info, dict):
+            return str(overlay_info)
+        parts = []
+        step = overlay_info.get("step")
+        if step is not None:
+            parts.append(f"step={step}")
+        action = overlay_info.get("action")
+        if action is not None:
+            if isinstance(action, dict):
+                action = ", ".join(f"{agent}={value}" for agent, value in sorted(action.items()))
+            parts.append(f"action={action}")
+        reward = overlay_info.get("reward")
+        if reward is not None:
+            if isinstance(reward, float):
+                reward = f"{reward:.3f}"
+            parts.append(f"reward={reward}")
+        done = overlay_info.get("done")
+        if done is not None:
+            parts.append(f"done={bool(done)}")
+        return " | ".join(parts)
+
     def _render_tabular_frame(self, tabular_observations: object) -> np.ndarray:
         observations = self._normalize_tabular_observations(tabular_observations)
         fake_world = self._world_from_tabular_observations(observations)
@@ -346,10 +429,15 @@ class PygameRenderer:
                 else:
                     grid = np.asarray(observation, dtype=np.int8)
                     self_vec = np.zeros(2 + len(Item), dtype=np.int16)
+                    mask = None
+                if isinstance(observation, dict):
+                    mask = self._normalize_tabular_mask(observation.get("mask"), grid.shape, self_vec.shape)
                 normalized[str(agent_id)] = {
                     "grid": self._clip_tabular_grid(grid),
                     "self": self_vec,
                 }
+                if mask is not None:
+                    normalized[str(agent_id)]["mask"] = mask
             return normalized
 
         arr = np.asarray(tabular_observations, dtype=np.int8)
@@ -364,6 +452,25 @@ class PygameRenderer:
             }
             for idx in range(arr.shape[0])
         }
+
+    @staticmethod
+    def _normalize_tabular_mask(mask: object, grid_shape: tuple[int, ...], self_shape: tuple[int, ...]) -> dict[str, np.ndarray] | None:
+        if not isinstance(mask, dict):
+            return None
+        grid_mask = mask.get("grid")
+        self_mask = mask.get("self")
+        normalized: dict[str, np.ndarray] = {}
+        if grid_mask is not None:
+            grid_arr = np.asarray(grid_mask, dtype=np.bool_)
+            if grid_arr.shape != grid_shape:
+                raise ValueError(f"tabular observation grid mask must be shaped {grid_shape}, got {grid_arr.shape}")
+            normalized["grid"] = grid_arr
+        if self_mask is not None:
+            self_arr = np.asarray(self_mask, dtype=np.bool_)
+            if self_arr.shape[0] != self_shape[0]:
+                raise ValueError(f"tabular observation self mask must have length {self_shape[0]}, got {self_arr.shape[0]}")
+            normalized["self"] = self_arr
+        return normalized or None
 
     @staticmethod
     def _clip_tabular_grid(grid: np.ndarray) -> np.ndarray:
@@ -470,13 +577,15 @@ class PygameRenderer:
             agent = world.agents[agent_id]
             if not agent.alive:
                 continue
+            observation_data = observations.get(agent_id, {})
+            self_mask = observation_data.get("mask", {}).get("self")
             self._blit_at(frame, self.assets.agent, panel_x, y)
             label_idx = id_to_index.get(agent_id)
             if label_idx is not None:
                 label_tile = self.assets.agent_labels.get(label_idx)
                 if label_tile is not None:
                     self._blit_at(frame, label_tile, panel_x, y)
-            self._draw_vitals(frame, agent, panel_x, y)
+            self._draw_vitals(frame, agent, panel_x, y, self_mask)
             slots_y = y + ts + padding
             items = agent.inventory_order if agent.inventory_order else list(
                 Item)
@@ -489,8 +598,13 @@ class PygameRenderer:
                 self._blit_at(frame, self.assets.ui_slot, slot_x, slot_y)
                 if idx < len(items):
                     item_id = items[idx]
+                    self_idx = 2 + int(item_id)
+                    item_known = self_mask is None or self_idx >= len(self_mask) or bool(self_mask[self_idx])
                     count = agent.inventory.get(item_id, 0)
-                    if count > 0:
+                    if not item_known:
+                        unknown_tile = self._scaled_cached_tile("unknown_item", 0, self.assets.unknown_item, ts)
+                        self._blit_at(frame, unknown_tile, slot_x, slot_y)
+                    elif count > 0:
                         tile = self.assets.items.get(item_id)
                         if tile is not None:
                             self._blit_at(frame, tile, slot_x, slot_y)
@@ -499,8 +613,9 @@ class PygameRenderer:
                 if idx == selected_index:
                     self._blit_at(frame, self.assets.ui_selected,
                                   slot_x, slot_y)
-            observation = observations.get(agent_id, {}).get("grid")
+            observation = observation_data.get("grid")
             if observation is not None:
+                observation_mask = observation_data.get("mask", {}).get("grid")
                 observation_x = panel_x + cols * ts + padding
                 self._draw_spatial_observation(
                     frame,
@@ -508,6 +623,7 @@ class PygameRenderer:
                     observation_x,
                     slots_y,
                     observation_tile_size,
+                    observation_mask,
                 )
             y += section_height
 
@@ -522,6 +638,7 @@ class PygameRenderer:
         x0: int,
         y0: int,
         tile_size: int,
+        mask: np.ndarray | None = None,
     ) -> None:
         assert self.assets is not None
         size = observation.shape[1]
@@ -529,6 +646,10 @@ class PygameRenderer:
             for gx in range(size):
                 px = x0 + gx * tile_size
                 py = y0 + gy * tile_size
+                if mask is not None and not bool(np.any(mask[:, gy, gx])):
+                    unknown_tile = self._scaled_cached_tile("unknown", 0, self.assets.unknown, tile_size)
+                    self._blit_at(frame, unknown_tile, px, py)
+                    continue
                 terrain_tile = self._scaled_terrain_tile(
                     Terrain(int(observation[0, gy, gx])),
                     tile_size,
@@ -622,7 +743,7 @@ class PygameRenderer:
         y0 = grid_y * ts + (ts - 1*size) // 2
         self._blit_at(frame, tile, x0, y0)
 
-    def _draw_vitals(self, frame: np.ndarray, agent, panel_x: int, panel_y: int) -> None:
+    def _draw_vitals(self, frame: np.ndarray, agent, panel_x: int, panel_y: int, self_mask: np.ndarray | None = None) -> None:
         assert self.assets is not None
         ts = self.config.tile_size
         icon_size = max(1, ts // 2)
@@ -631,13 +752,16 @@ class PygameRenderer:
         heart = self.assets.ui_heart
         hunger = self.assets.ui_hunger
 
-        if heart is not None:
+        hp_known = self_mask is None or len(self_mask) < 1 or bool(self_mask[0])
+        hunger_known = self_mask is None or len(self_mask) < 2 or bool(self_mask[1])
+
+        if hp_known and heart is not None:
             heart_icon = self._scaled_ui_tile(heart, icon_size)
             for i in range(max(0, agent.hp)):
                 self._blit_at(frame, heart_icon, x0 + i * (icon_size + 2), y0)
-        if hunger is not None:
+        y1 = y0 + icon_size + 4
+        if hunger_known and hunger is not None:
             hunger_icon = self._scaled_ui_tile(hunger, icon_size)
-            y1 = y0 + icon_size + 4
             for i in range(max(0, agent.hunger)):
                 self._blit_at(frame, hunger_icon, x0 + i * (icon_size + 2), y1)
 
