@@ -588,7 +588,7 @@ class PygameRenderer:
         self._blit_at(frame, band, 0, 0)
         self._draw_text_centered(
             frame,
-            "Real observation",
+            "Real observations",
             grid_width,
             base_width - grid_width,
             header_height,
