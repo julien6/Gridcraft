@@ -47,7 +47,7 @@ class PygameRenderer:
             pygame.display.set_caption("Gridcraft")
             self._pygame = pygame
             width = self._frame_width()
-            height = self.config.height * self.config.tile_size
+            height = self._frame_height()
             self.screen = pygame.display.set_mode((width, height))
             self.clock = pygame.time.Clock()
             self.assets = self._load_assets()
@@ -280,55 +280,60 @@ class PygameRenderer:
         base_width = grid_width + self._inventory_panel_width()
         if extra_tabular_observations is not None:
             frame_width = base_width + self._inventory_panel_width()
+            header_height = self._header_height()
         else:
             frame_width = base_width
+            header_height = 0
+        content_height = self.config.height * self.config.tile_size
         frame = np.zeros(
-            (self.config.height * self.config.tile_size,
+            (content_height + header_height,
              frame_width, 3),
             dtype=np.uint8,
         )
+        content = frame[header_height:, :, :]
 
         for y in range(self.config.height):
             for x in range(self.config.width):
                 terrain_tile = self.assets.terrain[Terrain(
                     world.terrain[y, x])]
-                self._blit(frame, terrain_tile, x, y)
+                self._blit(content, terrain_tile, x, y)
                 block_id = Block(world.blocks[y, x])
                 if block_id != Block.EMPTY:
                     block_tile = self.assets.blocks[block_id]
                     if block_tile is not None:
-                        self._blit(frame, block_tile, x, y)
+                        self._blit(content, block_tile, x, y)
 
         for item in world.items:
-            self._draw_ground_item(frame, item.item, item.x, item.y)
+            self._draw_ground_item(content, item.item, item.x, item.y)
 
         for mob in world.mobs:
-            self._blit(frame, self.assets.mob, mob.x, mob.y)
+            self._blit(content, self.assets.mob, mob.x, mob.y)
 
         agent_ids = sorted(world.agents.keys())
         id_to_index = {agent_id: idx for idx, agent_id in enumerate(agent_ids)}
         for agent_id, agent in world.agents.items():
             if agent.alive:
-                self._blit(frame, self.assets.agent, agent.x, agent.y)
+                self._blit(content, self.assets.agent, agent.x, agent.y)
                 label_idx = id_to_index.get(agent_id)
                 if label_idx is not None:
                     label_tile = self.assets.agent_labels.get(label_idx)
                     if label_tile is not None:
-                        self._blit(frame, label_tile, agent.x, agent.y)
-                self._draw_held_item(frame, agent, agent.x, agent.y)
+                        self._blit(content, label_tile, agent.x, agent.y)
+                self._draw_held_item(content, agent, agent.x, agent.y)
 
-        self._draw_inventories(frame, world, observations)
+        self._draw_inventories(content, world, observations)
 
         if extra_tabular_observations is not None:
             extra_observations = self._normalize_tabular_observations(extra_tabular_observations)
             fake_world = self._world_from_tabular_observations(extra_observations)
             extra_frame = np.zeros(
-                (self.config.height * self.config.tile_size,
+                (content_height,
                  base_width, 3),
                 dtype=np.uint8,
             )
             self._draw_inventories(extra_frame, fake_world, extra_observations)
-            frame[:, base_width:, :] = extra_frame[:, grid_width:, :]
+            content[:, base_width:, :] = extra_frame[:, grid_width:, :]
+            self._draw_column_headers(frame, grid_width, base_width)
 
         return frame
 
@@ -390,18 +395,34 @@ class PygameRenderer:
             parts.append(f"step={step}")
         action = overlay_info.get("action")
         if action is not None:
-            if isinstance(action, dict):
-                action = ", ".join(f"{agent}={value}" for agent, value in sorted(action.items()))
-            parts.append(f"action={action}")
+            parts.append(f"action={PygameRenderer._format_overlay_value(action)}")
         reward = overlay_info.get("reward")
         if reward is not None:
-            if isinstance(reward, float):
-                reward = f"{reward:.3f}"
-            parts.append(f"reward={reward}")
+            parts.append(f"reward={PygameRenderer._format_overlay_value(reward)}")
+        cumulative_reward = overlay_info.get("cumulative_reward")
+        if cumulative_reward is not None:
+            parts.append(f"cum_reward={PygameRenderer._format_overlay_value(cumulative_reward)}")
         done = overlay_info.get("done")
         if done is not None:
             parts.append(f"done={bool(done)}")
         return " | ".join(parts)
+
+    @staticmethod
+    def _format_overlay_value(value: object) -> str:
+        if isinstance(value, dict):
+            return ", ".join(
+                f"{agent}={PygameRenderer._format_overlay_value(val)}"
+                for agent, val in sorted(value.items())
+            )
+        if isinstance(value, (list, tuple)):
+            return "[" + ", ".join(PygameRenderer._format_overlay_value(val) for val in value) + "]"
+        if isinstance(value, np.ndarray):
+            return PygameRenderer._format_overlay_value(value.tolist())
+        if isinstance(value, np.generic):
+            return PygameRenderer._format_overlay_value(value.item())
+        if isinstance(value, float):
+            return f"{value:.3f}"
+        return str(value)
 
     def _render_tabular_frame(self, tabular_observations: object) -> np.ndarray:
         observations = self._normalize_tabular_observations(tabular_observations)
@@ -550,6 +571,53 @@ class PygameRenderer:
 
     def _frame_width(self) -> int:
         return self.config.width * self.config.tile_size + self._inventory_panel_width()
+
+    def _frame_height(self) -> int:
+        return self.config.height * self.config.tile_size
+
+    def _header_height(self) -> int:
+        return max(24, self.config.tile_size // 2)
+
+    def _draw_column_headers(self, frame: np.ndarray, grid_width: int, base_width: int) -> None:
+        header_height = self._header_height()
+        if header_height <= 0:
+            return
+        band = np.zeros((header_height, frame.shape[1], 4), dtype=np.uint8)
+        band[:, :, :3] = (20, 20, 20)
+        band[:, :, 3] = 230
+        self._blit_at(frame, band, 0, 0)
+        self._draw_text_centered(
+            frame,
+            "Real observation",
+            grid_width,
+            base_width - grid_width,
+            header_height,
+        )
+        self._draw_text_centered(
+            frame,
+            "Imagined observations",
+            base_width,
+            frame.shape[1] - base_width,
+            header_height,
+        )
+
+    def _draw_text_centered(self, frame: np.ndarray, text: str, x0: int, width: int, height: int) -> None:
+        pygame = self._pygame
+        assert pygame is not None
+        font_size = max(14, self.config.tile_size // 3)
+        font = pygame.font.Font(None, font_size)
+        surface = font.render(text, True, (255, 255, 255))
+        shadow = font.render(text, True, (0, 0, 0))
+        text_x = x0 + max(0, (width - surface.get_width()) // 2)
+        text_y = max(0, (height - surface.get_height()) // 2)
+        shadow_rgb = pygame.surfarray.array3d(shadow)
+        shadow_alpha = pygame.surfarray.array_alpha(shadow)
+        shadow_tile = np.transpose(np.dstack((shadow_rgb, shadow_alpha)), (1, 0, 2))
+        self._blit_at(frame, shadow_tile, text_x + 1, text_y + 1)
+        rgb = pygame.surfarray.array3d(surface)
+        alpha = pygame.surfarray.array_alpha(surface)
+        tile = np.transpose(np.dstack((rgb, alpha)), (1, 0, 2))
+        self._blit_at(frame, tile, text_x, text_y)
 
     def _draw_inventories(
         self,
