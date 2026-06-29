@@ -197,6 +197,8 @@ class GridcraftWorld:
         else:
             for agent_id in rewards:
                 rewards[agent_id] -= 100.0
+        for agent_id, agent in self.agents.items():
+            infos[agent_id]["task_level_max"] = int(agent.task_level_max)
 
         return StepResult(rewards=rewards, terminations=terminations, truncations=truncations, infos=infos)
 
@@ -215,6 +217,8 @@ class GridcraftWorld:
         elif action_name.startswith("craft"):
             recipe_name = ACTION_TO_RECIPE[action_name]
             self._craft(agent, recipe_name, rewards)
+        elif action_name.startswith("drop"):
+            self._drop(agent, action_name)
 
     def _move_agent(self, agent: AgentState, action_name: str, rewards: dict[str, float]) -> None:
         dx, dy = 0, 0
@@ -232,6 +236,7 @@ class GridcraftWorld:
             if (nx, ny) not in agent.visited_positions:
                 agent.visited_positions.add((nx, ny))
                 rewards[agent.agent_id] += self.config.new_cell_reward
+                self._mark_task_level(agent, 1)
             self._charge_hunger_action(agent, "move")
 
     def _harvest(self, agent: AgentState, rewards: dict[str, float]) -> None:
@@ -246,6 +251,7 @@ class GridcraftWorld:
                         self.blocks[ny, nx] = Block.EMPTY
                         self._add_item(agent, Item.WOOD, 1)
                         rewards[agent.agent_id] += self.config.harvest_wood_reward
+                        self._mark_task_level(agent, 2)
                         if self.rng.random() < self.config.tree_apple_drop_chance:
                             self._add_item(agent, Item.APPLE, 1)
                             rewards[agent.agent_id] += self.config.harvest_tree_apple_reward
@@ -256,17 +262,59 @@ class GridcraftWorld:
                             self.blocks[ny, nx] = Block.EMPTY
                             self._add_item(agent, Item.STONE, 1)
                             rewards[agent.agent_id] += self.config.harvest_stone_reward
+                            self._mark_task_level(agent, 6)
                             self._charge_hunger_action(agent, "harvest")
                             return
 
     def _pickup(self, agent: AgentState, rewards: dict[str, float]) -> None:
-        items_here = self._items_at(agent.x, agent.y)
-        if not items_here:
+        pickup_cells = {
+            (agent.x + 1, agent.y),
+            (agent.x - 1, agent.y),
+            (agent.x, agent.y + 1),
+            (agent.x, agent.y - 1),
+        }
+        items_in_reach = [
+            item for item in self.items
+            if (item.x, item.y) in pickup_cells
+        ]
+        if not items_in_reach:
             return
-        for item in items_here:
+        for item in items_in_reach:
             self._add_item(agent, item.item, item.count)
             rewards[agent.agent_id] += self.config.pickup_item_reward * item.count
-        self.items = [item for item in self.items if item not in items_here]
+            self._mark_task_level(agent, 6 if item.item == Item.STONE else 2)
+        self.items = [item for item in self.items if item not in items_in_reach]
+
+    def _drop(self, agent: AgentState, action_name: str) -> None:
+        item = self._selected_item(agent)
+        if item is None:
+            return
+        dx, dy = {
+            "drop_n": (0, -1),
+            "drop_s": (0, 1),
+            "drop_w": (-1, 0),
+            "drop_e": (1, 0),
+        }[action_name]
+        x, y = agent.x + dx, agent.y + dy
+        if not self.is_walkable(x, y):
+            return
+        if self._agent_at(x, y) or self._mob_at(x, y):
+            return
+
+        for item_drop in self.items:
+            if item_drop.x == x and item_drop.y == y and item_drop.item == item:
+                item_drop.count += 1
+                break
+        else:
+            self.items.append(ItemDrop(item=item, count=1, x=x, y=y))
+
+        agent.inventory[item] -= 1
+        if agent.inventory[item] <= 0:
+            del agent.inventory[item]
+            if item in agent.inventory_order:
+                agent.inventory_order.remove(item)
+            if agent.equipped == item:
+                agent.equipped = None
 
     def _attack(self, agent: AgentState, rewards: dict[str, float]) -> None:
         for mob in self.mobs:
@@ -281,6 +329,7 @@ class GridcraftWorld:
                 if mob.hp <= 0:
                     mob.alive = False
                     rewards[agent.agent_id] += self.config.mob_kill_reward
+                    self._mark_task_level(agent, 8)
                     if self.rng.random() < self.config.item_drop_chance:
                         self.items.append(
                             ItemDrop(item=Item.APPLE, count=1, x=mob.x, y=mob.y))
@@ -309,6 +358,7 @@ class GridcraftWorld:
             for item, count in recipe["outputs"].items():
                 self._add_item(agent, item, count)
             rewards[agent.agent_id] += self._craft_reward(recipe_name)
+            self._mark_task_level(agent, self._craft_task_level(recipe_name))
 
     def _craft_reward(self, recipe_name: str) -> float:
         if recipe_name == "plank":
@@ -321,12 +371,36 @@ class GridcraftWorld:
             return self.config.craft_stone_tool_reward
         return 0.0
 
+    @staticmethod
+    def _craft_task_level(recipe_name: str) -> int:
+        if recipe_name == "plank":
+            return 3
+        if recipe_name == "stick":
+            return 4
+        if recipe_name in ("wood_sword", "wood_pickaxe"):
+            return 5
+        if recipe_name in ("stone_sword", "stone_pickaxe"):
+            return 7
+        return 0
+
+    @staticmethod
+    def _mark_task_level(agent: AgentState, level: int) -> None:
+        agent.task_level_max = max(int(agent.task_level_max), int(level))
+
     def _add_item(self, agent: AgentState, item: Item, count: int) -> None:
         if item not in agent.inventory:
             agent.inventory_order.append(item)
         agent.inventory[item] = agent.inventory.get(item, 0) + count
         if item in (Item.WOOD_SWORD, Item.STONE_SWORD, Item.WOOD_PICKAXE, Item.STONE_PICKAXE):
             agent.equipped = item
+
+    def _selected_item(self, agent: AgentState) -> Item | None:
+        if agent.equipped is not None and agent.inventory.get(agent.equipped, 0) > 0:
+            return agent.equipped
+        for item in list(agent.inventory_order):
+            if agent.inventory.get(item, 0) > 0:
+                return item
+        return None
 
     def _charge_hunger_action(self, agent: AgentState, action_kind: str) -> None:
         intervals = {

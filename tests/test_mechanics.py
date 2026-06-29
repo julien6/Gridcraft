@@ -1,6 +1,6 @@
 from gridcraft import GridcraftConfig, GridcraftEnv
 from gridcraft.constants import ACTION_NAMES, Block, Item, Terrain
-from gridcraft.entities import MobState
+from gridcraft.entities import ItemDrop, MobState
 
 
 ACTION = {name: index for index, name in enumerate(ACTION_NAMES)}
@@ -194,6 +194,32 @@ def test_craft_reward_increases_with_task_hierarchy():
     env.close()
 
 
+def test_task_level_tracks_hierarchical_progress():
+    env, agent = _single_agent_env(tree_apple_drop_chance=0.0)
+    assert agent.task_level_max == 0
+
+    _step(env, "move_e")
+    assert agent.task_level_max == 1
+
+    env.world.blocks[agent.y, agent.x + 1] = Block.TREE
+    _step(env, "harvest")
+    assert agent.task_level_max == 2
+
+    _step(env, "craft_plank")
+    assert agent.task_level_max == 3
+
+    agent.inventory[Item.PLANK] = 2
+    _step(env, "craft_stick")
+    assert agent.task_level_max == 4
+
+    agent.inventory[Item.STICK] = 1
+    agent.inventory[Item.PLANK] = 1
+    _, _, _, _, infos = _step(env, "craft_wood_pickaxe")
+    assert agent.task_level_max == 5
+    assert infos["agent_0"]["task_level_max"] == 5
+    env.close()
+
+
 def test_failed_craft_gets_only_survival_reward():
     env, _ = _single_agent_env()
 
@@ -335,6 +361,131 @@ def test_mob_apple_drop_still_uses_item_drop_chance_on_ground():
     assert len(env.world.items) == 1
     assert env.world.items[0].item == Item.APPLE
     assert (env.world.items[0].x, env.world.items[0].y) == (agent.x + 1, agent.y)
+    env.close()
+
+
+def test_agent_can_drop_item_to_adjacent_cell():
+    env, agent = _single_agent_env()
+    agent.inventory[Item.WOOD] = 2
+    agent.inventory_order = [Item.WOOD]
+
+    _step(env, "drop_e")
+
+    assert agent.inventory[Item.WOOD] == 1
+    assert len(env.world.items) == 1
+    assert env.world.items[0].item == Item.WOOD
+    assert env.world.items[0].count == 1
+    assert (env.world.items[0].x, env.world.items[0].y) == (agent.x + 1, agent.y)
+    env.close()
+
+
+def test_pickup_collects_adjacent_items():
+    env, agent = _single_agent_env()
+    env.world.items.append(ItemDrop(item=Item.STONE, count=2, x=agent.x + 1, y=agent.y))
+
+    obs, rewards, terminations, truncations, infos = _step(env, "pickup")
+    reward = rewards["agent_0"]
+
+    assert agent.inventory[Item.STONE] == 2
+    assert env.world.items == []
+    assert reward == env.config.pickup_item_reward * 2 + env.config.survival_reward
+    assert infos["agent_0"]["task_level_max"] == 6
+    env.close()
+
+
+def test_pickup_ignores_item_on_agent_cell():
+    env, agent = _single_agent_env()
+    env.world.items.append(ItemDrop(item=Item.STONE, count=2, x=agent.x, y=agent.y))
+
+    reward = _reward(env, "pickup")
+
+    assert agent.inventory.get(Item.STONE, 0) == 0
+    assert len(env.world.items) == 1
+    assert reward == env.config.survival_reward
+    env.close()
+
+
+def test_drop_fails_when_target_cell_is_blocked():
+    env, agent = _single_agent_env()
+    agent.inventory[Item.WOOD] = 1
+    agent.inventory_order = [Item.WOOD]
+    env.world.terrain[agent.y, agent.x + 1] = Terrain.WATER
+
+    _step(env, "drop_e")
+
+    assert agent.inventory[Item.WOOD] == 1
+    assert env.world.items == []
+
+    env.world.terrain[agent.y, agent.x + 1] = Terrain.GRASS
+    env.world.blocks[agent.y, agent.x + 1] = Block.TREE
+    _step(env, "drop_e")
+
+    assert agent.inventory[Item.WOOD] == 1
+    assert env.world.items == []
+
+    env.world.blocks[agent.y, agent.x + 1] = Block.EMPTY
+    env.world.blocks[agent.y, agent.x + 1] = Block.STONE
+    _step(env, "drop_e")
+
+    assert agent.inventory[Item.WOOD] == 1
+    assert env.world.items == []
+
+    env.world.blocks[agent.y, agent.x + 1] = Block.EMPTY
+    env.world.mobs.append(MobState(mob_id=1, x=agent.x + 1, y=agent.y, hp=10))
+    _step(env, "drop_e")
+
+    assert agent.inventory[Item.WOOD] == 1
+    assert env.world.items == []
+    env.close()
+
+    config = GridcraftConfig(width=8, height=8, num_agents=2, max_mobs=0)
+    env = GridcraftEnv(config=config)
+    env.reset(seed=0)
+    env.world.terrain[:] = Terrain.GRASS
+    env.world.blocks[:] = Block.EMPTY
+    env.world.mobs.clear()
+    env.world.items.clear()
+    agent = env.world.agents["agent_0"]
+    other = env.world.agents["agent_1"]
+    agent.x, agent.y = 3, 3
+    other.x, other.y = 4, 3
+    agent.inventory[Item.WOOD] = 1
+    agent.inventory_order = [Item.WOOD]
+
+    env.step({"agent_0": ACTION["drop_e"], "agent_1": ACTION["stay"]})
+
+    assert agent.inventory[Item.WOOD] == 1
+    assert env.world.items == []
+    env.close()
+
+
+def test_dropping_equipped_item_can_unequip_agent():
+    env, agent = _single_agent_env()
+    agent.inventory[Item.STONE_SWORD] = 1
+    agent.inventory_order = [Item.STONE_SWORD]
+    agent.equipped = Item.STONE_SWORD
+
+    _step(env, "drop_e")
+
+    assert Item.STONE_SWORD not in agent.inventory
+    assert Item.STONE_SWORD not in agent.inventory_order
+    assert agent.equipped is None
+    assert len(env.world.items) == 1
+    assert env.world.items[0].item == Item.STONE_SWORD
+    env.close()
+
+
+def test_drop_merges_with_same_item_on_ground():
+    env, agent = _single_agent_env()
+    agent.inventory[Item.WOOD] = 1
+    agent.inventory_order = [Item.WOOD]
+    env.world.items.append(ItemDrop(item=Item.WOOD, count=3, x=agent.x + 1, y=agent.y))
+
+    _step(env, "drop_e")
+
+    assert agent.inventory.get(Item.WOOD, 0) == 0
+    assert len(env.world.items) == 1
+    assert env.world.items[0].count == 4
     env.close()
 
 

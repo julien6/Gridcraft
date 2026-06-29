@@ -74,6 +74,10 @@ ACTION_NAMES = [
     "craft_stone_sword",
     "craft_wood_pickaxe",
     "craft_stone_pickaxe",
+    "drop_n",
+    "drop_s",
+    "drop_w",
+    "drop_e",
 ]
 
 

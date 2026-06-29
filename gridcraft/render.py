@@ -300,9 +300,7 @@ class PygameRenderer:
                         self._blit(frame, block_tile, x, y)
 
         for item in world.items:
-            tile = self.assets.items.get(item.item)
-            if tile is not None:
-                self._blit(frame, tile, item.x, item.y)
+            self._draw_ground_item(frame, item.item, item.x, item.y)
 
         for mob in world.mobs:
             self._blit(frame, self.assets.mob, mob.x, mob.y)
@@ -661,9 +659,12 @@ class PygameRenderer:
                     if block_tile is not None:
                         self._blit_at(frame, block_tile, px, py)
                 entity_id = EntityType(int(observation[2, gy, gx]))
-                entity_tile = self._scaled_entity_tile(entity_id, tile_size)
-                if entity_tile is not None:
-                    self._blit_at(frame, entity_tile, px, py)
+                if entity_id == EntityType.ITEM:
+                    self._draw_observation_ground_item(frame, px, py, tile_size)
+                else:
+                    entity_tile = self._scaled_entity_tile(entity_id, tile_size)
+                    if entity_tile is not None:
+                        self._blit_at(frame, entity_tile, px, py)
 
     def _scaled_terrain_tile(self, terrain_id: Terrain, size: int) -> np.ndarray:
         return self._scaled_cached_tile("terrain", int(terrain_id), self.assets.terrain[terrain_id], size)
@@ -679,8 +680,6 @@ class PygameRenderer:
             return self._scaled_cached_tile("entity", int(entity_id), self.assets.agent, size)
         if entity_id == EntityType.MOB:
             return self._scaled_cached_tile("entity", int(entity_id), self.assets.mob, size)
-        if entity_id == EntityType.ITEM:
-            return self._scaled_cached_tile("entity", int(entity_id), self.assets.ui_slot, size)
         return None
 
     def _scaled_cached_tile(
@@ -729,6 +728,31 @@ class PygameRenderer:
         scaled = base[np.ix_(y_idx, x_idx)]
         self._scaled_item_cache[key] = scaled
         return scaled
+
+    def _draw_ground_item(self, frame: np.ndarray, item_id: Item, grid_x: int, grid_y: int) -> None:
+        ts = self.config.tile_size
+        size = max(1, int(ts * 0.6))
+        tile = self._scaled_item_tile(item_id, size)
+        if tile is None:
+            return
+        x0 = grid_x * ts + (ts - size) // 2
+        y0 = grid_y * ts + (ts - size) // 2
+        self._blit_at(frame, tile, x0, y0)
+
+    def _draw_observation_ground_item(
+        self,
+        frame: np.ndarray,
+        x0: int,
+        y0: int,
+        tile_size: int,
+    ) -> None:
+        size = max(1, int(tile_size * 0.6))
+        tile = self._scaled_item_tile(Item.WOOD, size)
+        if tile is None:
+            return
+        item_x = x0 + (tile_size - size) // 2
+        item_y = y0 + (tile_size - size) // 2
+        self._blit_at(frame, tile, item_x, item_y)
 
     def _draw_held_item(self, frame: np.ndarray, agent, grid_x: int, grid_y: int) -> None:
         item_id = self._selected_item(agent)

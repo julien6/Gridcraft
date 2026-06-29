@@ -20,6 +20,7 @@ class AgentState:
     successful_harvests_since_hunger_cost: int = 0
     successful_attacks_since_hunger_cost: int = 0
     last_attack_step: int = -1
+    task_level_max: int = 0
     alive: bool = True
 
 
